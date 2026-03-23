@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>AlphaDragon Phase 6.1 – Carbon Recursive with Oxygen</title>
+  <style>
+    body { background: black; color: white; font-family: monospace; margin: 0; overflow: hidden; }
+    canvas { display: block; }
+    #logDiv {
+      position: absolute; top: 10px; left: 10px; width: 400px;
+      max-height: 90vh; overflow-y: auto; padding: 10px;
+      background: rgba(0,0,0,0.7); border: 1px solid white;
+    }
+    #rightPanel {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      align-items: stretch;
+      pointer-events: none;
+    }
+    #hudDiv, #controlsDiv {
+      padding: 10px 12px;
+      background: rgba(0,0,0,0.65);
+      border: 1px solid rgba(255,255,255,0.85);
+      color: white;
+      font-family: monospace;
+      line-height: 1.45;
+      white-space: pre-line;
+      min-width: 220px;
+      box-sizing: border-box;
+    }
+    .panelTitle {
+      color: #7df9ff;
+      font-weight: bold;
+      margin-bottom: 6px;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+<canvas id="canvas" width="1200" height="800"></canvas>
+<div id="logDiv"></div>
+<div id="rightPanel">
+  <div id="hudDiv"></div>
+  <div id="controlsDiv"></div>
+</div>
+<script>
+// ============================================================
+// ALPHA DRAGON PHASE 6.1
+// Public-ready HTML build with clarity / collaboration cleanup
+// ============================================================
+//
+// SYSTEM OVERVIEW
+// 1. Seed the simulation with Hydrogen particles.
+// 2. On each animation frame:
+//    - drawParticles() renders the current state
+//    - drawPulseTrails() renders fusion echoes
+//    - autoFuseParticles() checks fusion rules in PRIORITY ORDER
+//    - runDecayLoop() handles timed decay / transformation rules
+// 3. Time progresses through `t`, which increments every frame.
+//
+// IMPORTANT NOTES
+// - Fusion is ORDER-DEPENDENT: earlier rules take priority.
+// - Time thresholds gate later-stage element formation.
+// - The oldest eligible particles are fused first.
+//
+// HOW TO EXPERIMENT
+// - Change CONFIG.INITIAL_HYDROGEN to alter starting density.
+// - Change CONFIG.TIME_THRESHOLDS to speed up / slow down stages.
+// - Add new fusion rules inside autoFuseParticles().
+// - Adjust decay timing inside runDecayLoop().
+//
+// MODELING NOTES
+// - Some rules are direct chemistry / stellar-fusion analogs.
+// - Some are Alpha Dragon extended interpretation layers.
+// - "Mana" represents a residual ash / energy state after Carbon decay.
+// - "Diamond" represents a stable compressed Carbon outcome.
+// ============================================================
+
+const CONFIG = {
+  INITIAL_HYDROGEN: 150,
+  MAX_PARTICLES: 150,
+  MAX_LOG_ENTRIES: 120,
+  MAX_FUSE_PER_FRAME: 10,
+  FRAME_DT: 0.0167,
+
+  TIME_THRESHOLDS: {
+    EARLY_CARBON_PUSH: 900,
+    WATER: 1000,
+    BERYLLIUM: 1000,
+    BORON: 1000,
+    NEON: 1100,
+    SILICON: 1200,
+    METHANE: 1200,
+    FLUORINE: 1200,
+    IRON: 1400,
+    CALCIUM: 1600,
+    GOLD: 2500
+  },
+
+  DECAY_THRESHOLDS: {
+    BERYLLIUM: 5,
+    CARBON: 25,
+    MANA: 50
+  },
+
+  RESEED: {
+    HYDROGEN_MIN: 5,
+    CHANCE: 0.0005
+  },
+
+  MATURE_CARBON_AGE: 10,
+  HELIUM_LOG_INTERVAL: 100,
+
+  UI: {
+    SHOW_LABELS_DEFAULT: true,
+    HUD_TOP_ELEMENTS: ["Hydrogen", "Helium", "Carbon", "Oxygen", "Nitrogen", "Diamond", "Mana"]
+  }
+};
+
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const centerX = canvas.width / 2;
+const centerY = canvas.height / 2;
+const logDiv = document.getElementById("logDiv");
+const hudDiv = document.getElementById("hudDiv");
+const controlsDiv = document.getElementById("controlsDiv");
+
+let particles = [];
+let pulseTrails = [];
+let t = 0;
+let paused = false;
+let showLabels = CONFIG.UI.SHOW_LABELS_DEFAULT;
+let logCount = 0;
+
+seedHydrogenOcean();
+updateControlsPanel();
+
+function seedHydrogenOcean() {
+  particles = [];
+  for (let i = 0; i < CONFIG.INITIAL_HYDROGEN; i++) {
+    particles.push({ element: "Hydrogen", radius: 25, createdAt: 0 });
+  }
+}
+
+
+function updateControlsPanel() {
+  controlsDiv.innerHTML = `
+    <span class="panelTitle">Controls</span>
+    SPACE = ${paused ? "resume" : "pause"}
+
+    R = reset simulation
+
+    L = ${showLabels ? "hide" : "show"} labels
+  `;
+}
+
+function getTrackedElementCounts() {
+  const counts = {};
+  for (const p of particles) {
+    counts[p.element] = (counts[p.element] || 0) + 1;
+  }
+  return counts;
+}
+
+function updateHUD() {
+  const counts = getTrackedElementCounts();
+  const trackedLines = CONFIG.UI.HUD_TOP_ELEMENTS
+    .map(name => `${name}: ${counts[name] || 0}`)
+    .join("\n");
+
+  hudDiv.innerHTML = `
+    <span class="panelTitle">Live HUD</span>
+    Time: ${t.toFixed(2)}
+
+    Total particles: ${particles.length}
+
+    Labels: ${showLabels ? "ON" : "OFF"}
+
+    Status: ${paused ? "PAUSED" : "RUNNING"}
+
+    ${trackedLines}
+  `;
+}
+
+function resetSimulation() {
+  pulseTrails = [];
+  t = 0;
+  logDiv.innerHTML = "";
+  logCount = 0;
+  seedHydrogenOcean();
+updateControlsPanel();
+  log("🔄 Reset simulation");
+}
+
+function log(msg) {
+  const entry = document.createElement("div");
+  entry.innerHTML = msg + "<br>";
+  logDiv.appendChild(entry);
+  logDiv.scrollTop = logDiv.scrollHeight;
+  logCount++;
+
+  if (logCount > CONFIG.MAX_LOG_ENTRIES) {
+    logDiv.removeChild(logDiv.firstChild);
+    logCount--;
+  }
+}
+
+function countElement(type) {
+  return particles.filter(p => p.element === type).length;
+}
+
+function findOldestParticle(type) {
+  const eligible = particles
+    .filter(p => p.element === type && t - p.createdAt > 0.5)
+    .sort((a, b) => a.createdAt - b.createdAt);
+
+  return eligible.length > 0 ? eligible[0] : null;
+}
+
+function fuseInto(newElement, fromElements, icon, radius) {
+  const particlesToFuse = [];
+
+  for (const type of fromElements) {
+    const particle = findOldestParticle(type);
+    if (!particle) return;
+    particlesToFuse.push(particle);
+  }
+
+  particlesToFuse.forEach(p => {
+    const idx = particles.indexOf(p);
+    if (idx !== -1) particles.splice(idx, 1);
+  });
+
+  const manaTrail = particlesToFuse.map(p => ({
+    element: p.element,
+    createdAt: p.createdAt,
+    fusedAt: t
+  }));
+
+  particles.push({ element: newElement, radius, createdAt: t, manaTrail });
+  log(`${icon} ${newElement} formed from ${fromElements.join(" + ")} at t=${t.toFixed(2)}`);
+
+  if (newElement === "Carbon") {
+    for (let i = 0; i < 3; i++) {
+      pulseTrails.push({ x: centerX, y: centerY, radius: 20 + i * 10, opacity: 1 - i * 0.3 });
+    }
+    ctx.fillStyle = "rgba(0,255,255,0.3)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  } else {
+    pulseTrails.push({ x: centerX, y: centerY, radius: 10, opacity: 1.0 });
+  }
+}
+
+function autoFuseParticles() {
+  const heliumCount = countElement("Helium");
+
+  if (t % CONFIG.HELIUM_LOG_INTERVAL === 0) {
+    log(`Helium count at t=${t.toFixed(2)}: ${heliumCount}`);
+  }
+
+  // ============================================================
+  // STAGE 0 – EARLY CARBON PUSH
+  // Front-load Carbon emergence once enough Helium exists.
+  // ============================================================
+  if (t > CONFIG.TIME_THRESHOLDS.EARLY_CARBON_PUSH && heliumCount >= 3) {
+    fuseInto("Carbon", ["Helium", "Helium", "Helium"], "💎", 70);
+    return;
+  }
+
+  let fuseCount = 0;
+
+  while (fuseCount < CONFIG.MAX_FUSE_PER_FRAME) {
+    fuseCount++;
+    const carbon = findOldestParticle("Carbon");
+
+    // ============================================================
+    // STAGE 6 – HEAVY ELEMENTS
+    // ============================================================
+    if (
+      countElement("Iron") >= 2 &&
+      countElement("Carbon") >= 2 &&
+      countElement("Silicon") >= 1 &&
+      t > CONFIG.TIME_THRESHOLDS.GOLD
+    ) {
+      fuseInto("Gold", ["Iron", "Iron", "Carbon", "Carbon", "Silicon"], "👑", 125);
+      continue;
+    }
+
+    if (
+      countElement("Carbon") >= 1 &&
+      countElement("Oxygen") >= 1 &&
+      countElement("Iron") >= 1 &&
+      t > CONFIG.TIME_THRESHOLDS.CALCIUM
+    ) {
+      fuseInto("Calcium", ["Carbon", "Oxygen", "Iron"], "🦴", 115);
+      continue;
+    }
+
+    // ============================================================
+    // STAGE 5 – MID / HEAVIER BUILDOUT
+    // ============================================================
+    if (
+      countElement("Silicon") >= 1 &&
+      countElement("Helium") >= 1 &&
+      countElement("Carbon") >= 1 &&
+      t > CONFIG.TIME_THRESHOLDS.IRON
+    ) {
+      fuseInto("Iron", ["Silicon", "Helium", "Carbon"], "⚙️", 105);
+      continue;
+    }
+
+    if (
+      countElement("Carbon") >= 1 &&
+      countElement("Oxygen") >= 2 &&
+      t > CONFIG.TIME_THRESHOLDS.SILICON
+    ) {
+      fuseInto("Silicon", ["Carbon", "Oxygen", "Oxygen"], "🪨", 95);
+      continue;
+    }
+
+    if (
+      countElement("Helium") >= 2 &&
+      countElement("Carbon") >= 1 &&
+      t > CONFIG.TIME_THRESHOLDS.NEON
+    ) {
+      fuseInto("Neon", ["Helium", "Helium", "Carbon"], "💡", 90);
+      continue;
+    }
+
+    // ============================================================
+    // STAGE 4 – MOLECULAR / EXTENDED CHEMISTRY LAYER
+    // ============================================================
+    if (
+      countElement("Carbon") >= 1 &&
+      countElement("Hydrogen") >= 4 &&
+      t > CONFIG.TIME_THRESHOLDS.METHANE
+    ) {
+      fuseInto("Methane", ["Carbon", "Hydrogen", "Hydrogen", "Hydrogen", "Hydrogen"], "💨", 95);
+      continue;
+    }
+
+    if (
+      countElement("Hydrogen") >= 2 &&
+      countElement("Oxygen") >= 1 &&
+      t > CONFIG.TIME_THRESHOLDS.WATER
+    ) {
+      fuseInto("Water", ["Hydrogen", "Hydrogen", "Oxygen"], "💧", 100);
+      continue;
+    }
+
+    if (
+      countElement("Oxygen") >= 1 &&
+      countElement("Hydrogen") >= 1 &&
+      t > CONFIG.TIME_THRESHOLDS.FLUORINE
+    ) {
+      fuseInto("Fluorine", ["Oxygen", "Hydrogen"], "🧴", 85);
+      continue;
+    }
+
+    // ============================================================
+    // STAGE 3 – CARBON BRANCHING
+    // Carbon is treated as a key branching node here.
+    // ============================================================
+    if (
+      countElement("Carbon") >= 1 &&
+      countElement("Helium") >= 1 &&
+      carbon &&
+      t - carbon.createdAt >= CONFIG.MATURE_CARBON_AGE
+    ) {
+      fuseInto("Oxygen", ["Carbon", "Helium"], "🔴", 80);
+      continue;
+    }
+
+    if (
+      countElement("Carbon") >= 1 &&
+      countElement("Hydrogen") >= 1 &&
+      carbon &&
+      t - carbon.createdAt >= CONFIG.MATURE_CARBON_AGE
+    ) {
+      fuseInto("Nitrogen", ["Carbon", "Hydrogen"], "💥", 75);
+      continue;
+    }
+
+    if (countElement("Helium") >= 3) {
+      fuseInto("Carbon", ["Helium", "Helium", "Helium"], "💎", 70);
+      continue;
+    }
+
+    // ============================================================
+    // STAGE 2 – LIGHT ELEMENT BUILDOUT
+    // ============================================================
+    if (
+      t > CONFIG.TIME_THRESHOLDS.BORON &&
+      countElement("Beryllium") >= 1 &&
+      countElement("Hydrogen") >= 1
+    ) {
+      fuseInto("Boron", ["Beryllium", "Hydrogen"], "🧨", 65);
+      continue;
+    }
+
+    if (
+      t > CONFIG.TIME_THRESHOLDS.BERYLLIUM &&
+      countElement("Helium") >= 2
+    ) {
+      fuseInto("Beryllium", ["Helium", "Helium"], "💚", 60);
+      continue;
+    }
+
+    // ============================================================
+    // STAGE 1 – PRIMORDIAL BASELINE
+    // ============================================================
+    if (countElement("Hydrogen") >= 2) {
+      fuseInto("Helium", ["Hydrogen", "Hydrogen"], "☀️", 45);
+      continue;
+    }
+
+    if (
+      countElement("Helium") >= 1 &&
+      countElement("Hydrogen") >= 1 &&
+      Math.floor(t) % 40 === 0
+    ) {
+      fuseInto("Lithium", ["Helium", "Hydrogen"], "💗", 55);
+      continue;
+    }
+
+    // ============================================================
+    // FALLBACK – EMERGENCY RESEED
+    // Prevent total Hydrogen exhaustion.
+    // ============================================================
+    if (
+      countElement("Hydrogen") < CONFIG.RESEED.HYDROGEN_MIN &&
+      Math.random() < CONFIG.RESEED.CHANCE
+    ) {
+      particles.push({ element: "Hydrogen", radius: 25, createdAt: t });
+      log("🧬 Emergency Hydrogen Re-seed at t=" + t.toFixed(2));
+    }
+
+    break;
+  }
+
+  runDecayLoop();
+}
+
+function getGlowColor(element) {
+  const colorMap = {
+    Hydrogen: "magenta",
+    Helium: "orange",
+    Lithium: "#ff66cc",
+    Beryllium: "lime",
+    Boron: "red",
+    Carbon: "cyan",
+    Nitrogen: "purple",
+    Oxygen: "blue",
+    Mana: "gray",
+    Diamond: "white",
+    Fluorine: "#66ffff",
+    Water: "#66ccff",
+    Methane: "#996633",
+    Neon: "#ccffcc",
+    Silicon: "#9966ff",
+    Iron: "orange",
+    Calcium: "#dddddd",
+    Gold: "gold"
+  };
+
+  return colorMap[element] || "#ffffff";
+}
+
+function drawParticles() {
+  particles.forEach((p, i) => {
+    const angle = (i / particles.length) * Math.PI * 2 + t * 0.1;
+    const x = centerX + Math.cos(angle) * p.radius;
+    const y = centerY + Math.sin(angle) * p.radius;
+    const glow = getGlowColor(p.element);
+
+    ctx.beginPath();
+    ctx.fillStyle = glow;
+    ctx.shadowColor = glow;
+    ctx.shadowBlur = 50;
+    ctx.arc(x, y, 10, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    if (showLabels) {
+      ctx.font = "14px monospace";
+      ctx.fillStyle = "white";
+      const labelX = x + Math.cos(angle) * 20;
+      const labelY = y + Math.sin(angle) * 20;
+      ctx.fillText(p.element, labelX, labelY);
+    }
+  });
+}
+
+function drawPulseTrails() {
+  for (let i = pulseTrails.length - 1; i >= 0; i--) {
+    const trail = pulseTrails[i];
+    ctx.beginPath();
+    ctx.arc(trail.x, trail.y, trail.radius, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255,255,255,${trail.opacity})`;
+    ctx.shadowColor = "white";
+    ctx.shadowBlur = 20;
+    ctx.fill();
+
+    trail.opacity *= 0.98;
+    trail.radius += 0.5;
+
+    if (trail.opacity <= 0.05) {
+      pulseTrails.splice(i, 1);
+    }
+  }
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === " ") {
+    e.preventDefault();
+    paused = !paused;
+    log(paused ? "⏸️ Paused" : "▶️ Resumed");
+    updateControlsPanel();
+    updateHUD();
+  }
+
+  if (e.key.toLowerCase() === "r") {
+    resetSimulation();
+    updateControlsPanel();
+    updateHUD();
+  }
+
+  if (e.key.toLowerCase() === "l") {
+    showLabels = !showLabels;
+    log(showLabels ? "🏷️ Labels shown" : "🙈 Labels hidden");
+    updateControlsPanel();
+    updateHUD();
+  }
+});
+
+function animate() {
+  if (paused) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    drawParticles();
+    drawPulseTrails();
+    updateHUD();
+    requestAnimationFrame(animate);
+    return;
+  }
+
+  t += CONFIG.FRAME_DT;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  drawParticles();
+  drawPulseTrails();
+  autoFuseParticles();
+  updateHUD();
+  requestAnimationFrame(animate);
+}
+
+function runDecayLoop() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+
+    // Light-element instability branch
+    if (p.element === "Beryllium" && t - p.createdAt >= CONFIG.DECAY_THRESHOLDS.BERYLLIUM) {
+      particles.splice(i, 1);
+      particles.push({ element: "Hydrogen", radius: 25, createdAt: t });
+      particles.push({ element: "Hydrogen", radius: 25, createdAt: t });
+      log("💥 Beryllium decayed into Hydrogen + Hydrogen at t=" + t.toFixed(2));
+      continue;
+    }
+
+    // Alpha Dragon extended Carbon-decay interpretation
+    if (p.element === "Carbon" && t - p.createdAt >= CONFIG.DECAY_THRESHOLDS.CARBON) {
+      particles.splice(i, 1);
+
+      if (Math.random() < 0.5) {
+        particles.push({
+          element: "Mana",
+          radius: 30,
+          createdAt: t,
+          manaTrail: p.manaTrail || []
+        });
+        log("🔥 Carbon decayed into Mana (Ash) at t=" + t.toFixed(2));
+      } else {
+        particles.push({
+          element: "Diamond",
+          radius: 30,
+          createdAt: t,
+          manaTrail: p.manaTrail || []
+        });
+        log("💎 Carbon transformed into Diamond at t=" + t.toFixed(2));
+      }
+      continue;
+    }
+
+    // Residual ash returns to Hydrogen baseline
+    if (p.element === "Mana" && t - p.createdAt >= CONFIG.DECAY_THRESHOLDS.MANA) {
+      particles.splice(i, 1);
+      particles.push({ element: "Hydrogen", radius: 25, createdAt: t });
+      log("🌫️ Mana vaporized into Hydrogen at t=" + t.toFixed(2));
+    }
+  }
+}
+
+animate();
+</script>
+</body>
+</html>
